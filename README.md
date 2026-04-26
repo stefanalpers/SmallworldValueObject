@@ -78,14 +78,9 @@ Scenario E reveals the logical method as the bottleneck of the extraction, as it
 
 Despite the performance overhead, value_object offers advantages in specific scenarios:
 
-- **Serialization:** Unlike rwo_record, which is tightly coupled to the 
-  Smallworld database (Active Record pattern), a value_object is a plain 
-  data object that can be serialized to JSON — making it well-suited for 
-  web services and external integrations.
-- **Reduced coupling:** You can extract only the fields relevant to a 
-  downstream process, keeping your logic lean and focused.
-- **Testability:** Since value_object has no database dependency, it can 
-  be instantiated directly in unit tests — no live database required.
+- **Serialization:** Unlike rwo_record, which is tightly coupled to the Smallworld database (Active Record pattern), a value_object is a plain data object that can be serialized to JSON — making it well-suited for web services and external integrations.
+- **Reduced coupling:** You can extract only the fields relevant to a downstream process, keeping your logic lean and focused.
+- **Testability:** Since value_object has no database dependency, it can be instantiated directly in unit tests — no live database required.
 
 ## Conclusion
 
