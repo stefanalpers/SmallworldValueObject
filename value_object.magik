@@ -1,0 +1,997 @@
+#% text_encoding = iso8859_1
+
+# Copyright (c) 2026 Mark Hing
+# 
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+# 
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+# 
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+_package sw
+$
+
+def_slotted_exemplar(:value_object,
+	{
+		{:internal_data, _unset},
+		{:metadata, _unset},
+		{:prototype, _unset}	
+	}, {} )
+$
+
+_pragma(classify_level=basic, topic=value_object, usage=external)
+_method value_object.new(_gather p_values)
+	
+	>> _clone.init(p_values)
+	
+_endmethod
+$
+
+_pragma(classify_level=basic, topic=value_object, usage=internal)
+_private _method value_object.init(p_values)
+	
+	_local l_values << p_values
+	
+	_if ~p_values.empty? _andif p_values.responds_to?(:first)
+	_then
+		# we have parameters.
+		_if p_values.first.class_name _is :simple_vector
+		_then
+			# parameters were passed in via a simple_vector. Extract it.
+			l_values << p_values.first
+			
+		_endif
+	_endif
+	
+	_constant METADATA << .metadata << concurrent_hash_map.new()
+	
+	# property names in this set cannot be used as value_object properties.
+	METADATA[:reserved_methods] << set.new_with(:new, :init, :data, :date_created, :make_mutable,
+						    :property_value, :has_property_name?,
+						    :property_names, :property_values, :obj_properties,
+						    :does_not_understand, :hooks,
+						    :seal, :is_sealed?, :freeze, :is_frozen?, :validate_property,
+						    :add_validator, :remove_validator)
+	
+	METADATA[:validators] << concurrent_hash_map.new()
+	
+	METADATA[:validation_fns] << concurrent_hash_map.new()
+
+	# built in validation types.
+	METADATA[:validation_fns][:string] << _proc @validate_string(p_val) _return p_val.is_kind_of?(char16_vector) _endproc 
+	METADATA[:validation_fns][:boolean] << _proc @validate_boolean(p_val) _return p_val.is_kind_of?(_false) _endproc 
+	METADATA[:validation_fns][:array] << _proc @validate_array(p_val) _return p_val.is_kind_of?(simple_vector) _orif p_val.is_kind_of?(rope) _endproc 
+	METADATA[:validation_fns][:object] << _proc @validate_object(p_val) _return p_val.is_kind_of?(value_object) _endproc 
+	#	METADATA[:validation_fns][:number] << _proc @validate_number(p_val) _return p_val.is_number?(p_val) _endproc 
+	
+	# if a property name is in this set, it is IMMUTABLE and cannot be changed or deleted via the setter.
+	# Default is to make a property IMMUTABLE when it is created.
+	METADATA[:immutable_properties] << set.new()
+	
+	# properties in this set are permanently mutable.
+	METADATA[:permanent_mutable_properties] << set.new()
+	
+	# Sealing an object: no new properties can be added and existing properties cannot be removed.
+	#                    However existing properties can be changed if they are not marked IMMUTABLE.
+	#                    Default is FALSE.
+	METADATA[:sealed?] << _false
+	
+	# Freezing an object: no new properties can be added and existing properties cannot be removed (i.e. the object is SEALED).
+	#                     Also, existing properties cannot be changed (i.e. they are all IMMUTABLE).
+	#                     Default is FALSE.   
+	METADATA[:frozen?] << _false
+	
+	_constant INTERNAL_DATA << .internal_data << concurrent_hash_map.new()
+
+	_if l_values _isnt _unset _andif l_values.class_name _is :simple_vector _andif l_values.size _mod 2 = 0
+	_then
+		_for i _over range(1, l_values.size, 2)
+		_loop
+			_local l_key << l_values[i].as_symbol()
+			_if ~METADATA[:reserved_methods].includes?(l_key)
+			_then
+				INTERNAL_DATA[l_key] << l_values[i+1]
+				METADATA[:immutable_properties].add(l_key)
+			_endif 
+		_endloop
+	_endif
+	
+	METADATA[:date_created] << date_time.now()
+	
+	>> _self	
+_endmethod
+$
+
+_pragma(classify_level=basic, topic=value_object, usage=internal)
+_method value_object.new_from_dd_record(p_dd_record,
+					_optional p_physical_fields, p_include_table_name?, p_include_view_name?)
+	## P_DD_RECORD must inherit from dd_record_and_collection_mixin
+	##
+	## P_PHYSICAL_FIELDS must be a collection of DD_PHYS_FIELD.
+	##
+	## For sake of performance provide P_PHYSICAL_FIELDs whenever
+	## it is possible. If not provided, all physical fields will be
+	## part of the created value_object. Excluded in this case are
+	## only the following fields:
+	##
+	## rwo_id
+	## ds!version
+	##
+
+	_if _not p_dd_record.inherits_from?(dd_record_and_collection_mixin)
+	_then
+		condition.raise(:wrong_type)
+	_endif
+
+	_local l_field_names << equality_set.new_from(p_physical_fields.default({}))
+
+	_local l_record_fields << rope.new()
+	_if l_field_names.empty?
+	_then
+		l_record_fields.add_all_first(
+			p_dd_record.physical_fields.
+				all_elements_not_satisfying(
+					predicate.using(
+						_proc@omit_internal_fields(p_field)
+							>> {:rwo_id, :ds!version}.includes?(p_field.name)
+						_endproc)))			
+	_else
+		_for i_name _over p_dd_record.key_fields.fast_elements()
+		_loop
+			l_record_fields.add(i_name)
+		_endloop
+	_endif
+	
+	_local l_value_object_data << rope.new()
+	_for i_field _over l_record_fields.fast_elements()
+	_loop@record_fields
+		_local l_field_name << i_field.name
+		l_value_object_data.add(l_field_name)
+		_if i_field.type.enumerator _isnt _unset
+		_then
+			l_value_object_data.add(p_dd_record.perform(l_field_name).write_string)
+		_else
+			l_value_object_data.add(p_dd_record.perform(l_field_name))
+		_endif				
+	_endloop
+
+	_if p_include_table_name?.default(_false)
+	_then l_value_object_data.add_all_first({:rwo_type, p_dd_record.source_collection.name})
+	_endif
+
+	_if p_include_view_name?.default(_false)
+	_then l_value_object_data.add_all_first({:source_view, p_dd_record.source_view.name})
+	_endif
+	
+	>> value_object.new(_scatter l_value_object_data)
+_endmethod
+$
+
+_pragma(classify_level=debug, topic=value_object, usage=internal)
+_method value_object.note_change(p_who, p_aspect, _optional p_change_info, _gather p_more_info)
+	
+	# receives the note_change() notification from another object and forwards it to a dynamic value_object method if one has been defined.
+	_if _self.data[:note_change].class_name _is :procedure
+	_then
+		_return _self.data[:note_change](p_who, p_aspect, p_change_info, _scatter(p_more_info))
+	_endif
+	
+_endmethod
+$
+
+_pragma(classify_level=debug, topic=value_object, usage=internal)
+_method value_object.data
+	
+	_return .internal_data
+	
+_endmethod
+$
+
+_pragma(classify_level=debug, topic=value_object, usage=internal)
+_method value_object.date_created
+	
+	_return .metadata[:date_created]
+	
+_endmethod
+$
+
+_pragma(classify_level=basic, topic=value_object, usage=external)
+_method value_object.prototype<< p_prototype
+	## set a value_object's prototype.
+	## P_PROTOTYPE must be a value_object.
+	
+	_if p_prototype.class_name _isnt :value_object _andif p_prototype _isnt _unset
+	_then
+		condition.raise (:error, :string, "Prototype must be a value_object." )
+	_endif
+	
+	_local l_proto << p_prototype
+	
+	_loop
+		_if l_proto _is _unset _then _leave _endif
+		
+		_if l_proto.prototype _is _self _orif l_proto _is _self
+		_then
+                        # circular reference.
+                        condition.raise (:error, :string, "Circular prototype reference." )   
+
+		_endif
+		
+		l_proto << l_proto.prototype
+		
+	_endloop
+	
+	.prototype << p_prototype
+	
+_endmethod
+$
+
+_pragma(classify_level=basic, topic=value_object, usage=external)
+_method value_object.prototype
+	
+	_return .prototype
+	
+_endmethod
+$
+
+_pragma(classify_level=basic, topic=value_object, usage=external)
+_method value_object.make_mutable(p_name, _optional p_permanently_mutable?)
+	##
+	
+	_local l_permanently_mutable? << p_permanently_mutable?.default(_false)
+	
+	_constant METADATA << .metadata
+	_constant NAME << p_name.as_symbol()
+	
+	_constant SUCCESS? << _if _self.is_frozen?
+			      _then
+				      >> _false				      
+			      _elif METADATA[:permanent_mutable_properties].includes?(NAME)
+			      _then
+				      >> _true				      
+			      _elif l_permanently_mutable? _is _true
+			      _then
+				      METADATA[:permanent_mutable_properties].add(NAME)
+				      METADATA[:immutable_properties].remove(NAME)
+				      >> _true				      
+			      _else
+				      >> METADATA[:immutable_properties].remove(NAME)
+			      _endif
+	
+	_return SUCCESS?
+	
+_endmethod
+$ 
+
+_pragma(classify_level=basic, topic=value_object, usage=external)
+_method value_object.seal
+	## note: once an object is SEALED, it cannot be unsealed.
+	
+	_return .metadata[:sealed?] << _true
+	
+_endmethod
+$
+
+_pragma(classify_level=basic, topic=value_object, usage=external)
+_method value_object.is_sealed?
+	
+	_return .metadata[:sealed?]
+	
+_endmethod
+$ 
+
+_pragma(classify_level=basic, topic=value_object, usage=external)
+_method value_object.freeze
+	## note: once an object is FROZEN, it cannot be unfrozen.
+	
+	# a frozen object is also sealed. Make it so.
+	_self.seal
+	
+	_return .metadata[:frozen?] << _true
+	
+_endmethod
+$
+
+_pragma(classify_level=basic, topic=value_object, usage=external)
+_method value_object.is_frozen?
+	
+	_return .metadata[:frozen?]
+	
+_endmethod
+$ 
+
+_pragma(classify_level=basic, topic=value_object, usage=external)
+_method value_object.has_property_name?(p_name)
+	
+	_return _self.internal_data[p_name.as_symbol()] _isnt _unset 
+	
+_endmethod
+$
+
+_pragma(classify_level=basic, topic=value_object, usage=external)
+_method value_object.property_value(p_name)
+	
+	_return _self.internal_data[p_name.as_symbol()]
+	
+_endmethod
+$
+
+_pragma(classify_level=basic, topic=value_object, usage=external)
+_method value_object.property_names
+	
+	_return _self.obj_properties(:names)
+	
+_endmethod
+$
+
+_pragma(classify_level=basic, topic=value_object, usage=external)
+_method value_object.property_values
+	
+	_return _self.obj_properties(:values)
+	
+_endmethod
+$
+
+_pragma(classify_level=basic, topic=value_object, usage=external)
+_private _method value_object.obj_properties(p_type)
+	
+	_local l_props << rope.new()
+	
+	_for i_key, i_element _over .internal_data.fast_keys_and_elements()
+	_loop
+		_if p_type _is :names
+		_then
+			l_props.add_last(i_key)
+		_else
+			l_props.add_last(i_element)
+		_endif
+	_endloop
+	
+	_return simple_vector.new_from(l_props)	
+_endmethod
+$
+
+_method value_object.add_validator(p_property_name, p_validator)
+	
+	_constant VALIDATOR << _if p_validator.class_name _is :procedure
+			       _then 
+				       >> p_validator
+			       _else 
+				       >> .metadata[:validation_fns][p_validator.as_symbol()]
+			       _endif 
+	
+	_if VALIDATOR _isnt _unset 
+	_then 
+		.metadata[:validators][p_property_name.as_symbol()] << VALIDATOR
+	_endif 
+	
+_endmethod
+$
+
+_method value_object.remove_validator(p_property_name)
+	
+	_constant NAME << p_property_name.as_symbol()
+	
+	_if .metadata[:validators][NAME] _isnt _unset 
+	_then 
+		.metadata[:validators].remove_key(NAME)
+	_endif 
+	
+_endmethod
+$
+
+_method value_object.show_validator(p_property_name)
+	
+	_constant NAME << p_property_name.as_symbol()
+	
+	_if (validator << .metadata[:validators][NAME]) _isnt _unset 
+	_then 
+		_return validator.name
+	_endif 
+	
+_endmethod
+$
+
+_method value_object.validate_property(p_property_name)
+	
+	_constant NAME << p_property_name.as_symbol()
+	
+	_if (validator << .metadata[:validators][NAME]) _isnt _unset
+	_then
+		_return validator.invoke(_self.internal_data[NAME])
+	_endif
+	
+	_return _true
+	
+_endmethod
+$
+
+_pragma(classify_level=advanced, topic=value_object, usage=internal)
+_method value_object.does_not_understand(p_message, p_private?)
+	
+	_constant INTERNAL_DATA << .internal_data
+	_constant PROTOTYPE << .prototype
+	
+	_local l_method << p_message.selector
+	_local l_args << p_message.args
+	
+	_constant VALUE << _if ~l_args.empty?
+			   _then >> l_args.first
+			   _else >> _unset
+			   _endif 
+	
+	# setter.
+	_if (i << l_method.write_string.index_of_seq("^")) _isnt _unset _or (i << l_method.write_string.index_of_seq("<<")) _isnt _unset
+	_then
+		# setter method.
+		_constant METADATA << .metadata
+		_constant RESERVED_METHODS << METADATA[:reserved_methods]
+		_constant IMMUTABLE_PROPERTIES << METADATA[:immutable_properties]
+		_constant PERMANENT_MUTABLE_PROPERTIES << METADATA[:permanent_mutable_properties]
+		_constant SEALED? << METADATA[:sealed?]
+		_constant FROZEN? << METADATA[:frozen?]
+		
+		_local l_key << _unset
+		
+		_if (l_method.write_string.index_of_seq("^")) _isnt _unset _then
+			l_key << l_method.write_string.slice(1, i-2).as_symbol()
+		_else
+			l_key << l_method.write_string.slice(1, i-1).as_symbol()
+		_endif
+		
+		_constant KEY_NAME << l_key.write_string.as_uppercase()
+		
+		_if FROZEN?
+		_then
+			_if VALUE _is _unset
+			_then
+				# cannot remove a property from a frozen object.
+				condition.raise (:error, :string, write_string("Frozen object's property ", KEY_NAME, " cannot be deleted"))
+			_else
+				# cannot set a new property on a frozen object.
+				condition.raise (:error, :string, write_string("Frozen object is not extensible. Cannot add or modify property ", KEY_NAME))
+			_endif
+		_endif
+		
+		_if SEALED?
+		_then
+			_if VALUE _is _unset _andif INTERNAL_DATA.includes_key?(l_key)
+			_then
+				# cannot remove a property from a sealed object.
+				condition.raise (:error, :string, write_string("Sealed object's property ", KEY_NAME, " cannot be deleted"))
+			_endif
+			
+			_if ~INTERNAL_DATA.includes_key?(l_key)
+			_then
+				# cannot set a new property on a sealed object.
+				condition.raise (:error, :string, write_string("Sealed object is not extensible. Cannot add new property ", KEY_NAME))
+			_endif
+		_endif
+		
+		_if RESERVED_METHODS.includes?(l_key)
+		_then
+			# cannot change a reserved method name.
+			condition.raise (:error, :string, write_string("Cannot set reserved method name ", KEY_NAME))
+		_endif
+		
+		# setting a property's value to UNSET removes the property from the object.
+		_constant RETVAL << _if VALUE _is _unset
+				    _then
+					    # remove the internal data storage key.
+					    (l_val, l_removed?) << INTERNAL_DATA.remove_key(l_key)
+					    METADATA[:permanent_mutable_properties].remove(l_key)
+					    METADATA[:immutable_properties].remove(l_key)
+					    >> l_val
+					    
+				    _else
+					    # call hook proc if it's defined.
+					    _self.hooks(:hook_setter, l_method, VALUE)
+					    
+					    _if ~PERMANENT_MUTABLE_PROPERTIES.includes?(l_key)
+					    _then
+						    # default is to create properties as IMMUTABLE.
+						    IMMUTABLE_PROPERTIES.add(l_key)
+					    _endif
+					    
+			                    _constant OLD_VAL << INTERNAL_DATA[l_key]
+					    
+					    INTERNAL_DATA[l_key] << VALUE
+					    
+					    # validate the property.
+					    _if ~_self.validate_property(l_key)
+			                    _then 
+						    _if OLD_VAL _isnt _unset 
+						    _then 
+							    INTERNAL_DATA[l_key] << OLD_VAL
+						    _else 
+							    INTERNAL_DATA.remove_key(l_key)
+							    METADATA[:permanent_mutable_properties].remove(l_key)
+							    METADATA[:immutable_properties].remove(l_key)
+						    _endif 
+						    
+						    condition.raise(:error, :string,
+								    write_string("Failed validation: Invalid value '",
+										 VALUE, "' for property ",
+										 l_key.write_string.uppercase, "."))
+					    _endif 
+					    
+					    >> INTERNAL_DATA[l_key]
+					    
+		                    _endif
+		
+		>> RETVAL
+		
+	_endif
+	
+	# executor.
+	_if (i << l_method.write_string.index_of_seq("(")) _isnt _unset
+	_then
+		# executor method.		
+		_local l_key << l_method.write_string.slice(1, i-1).as_symbol()
+		
+		_if INTERNAL_DATA[l_key] _isnt _unset
+		_then
+			_return INTERNAL_DATA[l_key].invoke(_scatter l_args)
+		_else
+			# check the prototype for the property.
+			_if PROTOTYPE _isnt _unset
+			_then
+				_return PROTOTYPE.perform(l_method, _scatter l_args)
+			_endif
+			
+			# if property is not found in the prototype chain, let _super handle it.
+			_return _super.does_not_understand(p_message, p_private?)
+			
+		_endif
+		
+	_endif
+	
+	# getter.
+	_if (val << INTERNAL_DATA[l_method]) _is _unset
+	_then
+		# object does not have the property in its internal data, check the prototype chain.
+		_if PROTOTYPE _isnt _unset
+		_then
+			_return PROTOTYPE.perform(l_method)
+		_endif
+		
+		# property not found.
+		_return _unset
+		
+	_else
+		# getter.
+		
+		# call hook proc if it's defined.
+		_self.hooks(:hook_getter, l_method)
+		
+		_return val
+	_endif
+	
+_endmethod
+$
+
+_pragma(classify_level=advanced, topic=value_object, usage=internal)
+_method value_object.hooks(p_hook_name, p_method_name, _optional p_new_value)
+	
+	_constant HOOK_NAME_PARENS << write_string(p_hook_name, "()").as_symbol()
+	
+	_try _with cond
+		_if .internal_data[p_hook_name].class_name _is :procedure
+		_then
+			_constant METHOD_NAME << p_method_name.replace_all_instances_of("<<","").as_symbol()
+			_constant VALUE << _self.internal_data[METHOD_NAME]
+			
+			# if a hook for the type has been defined, invoke it with the value, method and object as arguments.
+			# For hook_setter, also pass in the new value.
+			_self.perform(HOOK_NAME_PARENS, VALUE, p_method_name, _self, p_new_value)
+			
+		_endif
+		
+	_when error
+		write("hooks() failed. Method: ", p_method_name, " Error: ", cond.report_string)
+	_endtry
+	
+	
+_endmethod
+$
+
+_pragma(classify_level=advanced, topic=value_object, usage=internal)
+_method value_object.empty?
+	
+	_return .internal_data.empty?
+	
+_endmethod
+$
+
+_pragma(classify_level=advanced, topic=value_object, usage=internal)
+_method value_object.print_on(p_stream)
+	
+	p_stream.write(_self.as_json_string())
+	
+_endmethod
+$
+
+_pragma(classify_level=basic, topic=value_object)
+_method value_object.copy(_gather p_keys_values)
+	## P_KEYS_VALUES is a list of keys and values that will be copied into the new value_object.
+	## If a key exists, it will be overwritten with the new value, otherwise it will be added to the new value_object.
+	## E.g. bo << value_object.new(:one, 1); bo1 << bo.copy(:one, 2, :five, 5) --> bo1 is {"one":2,"five":5}
+	
+	_try _with cond
+		# always perform a deep_copy(). The difference between .copy() and .deep_copy() is .copy() allows for property values to be overwritten or added in the method call.
+		
+		_constant BO << _self.deep_copy()
+		
+		# ensure all keys have a value.
+		_if (sz << p_keys_values.size) _mod 2 = 0
+		_then
+			_for i _over range(1, sz, 2)
+			_loop
+				_local l_key << p_keys_values[i].as_symbol()
+				_if ~BO.metadata[:reserved_methods].includes?(l_key)
+				_then 
+					BO.internal_data[l_key] << p_keys_values[i+1]
+					BO.metadata[:immutable_properties].add(l_key)
+				_endif 
+			_endloop
+		_endif
+                
+		# by default, copied objects are reset to unsealed and unfrozen.
+		BO.metadata[:sealed?] << _false
+		BO.metadata[:frozen?] << _false
+		
+		# update the copy's DATE_CREATED timestamp.
+		BO.metadata[:date_created] << date_time.now()
+		
+		_return BO
+		
+	_when error
+		write(cond.report_string)
+	_endtry
+	
+	
+_endmethod
+$
+
+_pragma(classify_level=basic, topic=value_object)
+_method value_object.deep_copy()
+	## creates a deep copy of the value_object.
+	## returns a new value_object instance with deeply copied properties.
+	
+	_try _with cond
+		_constant BO << value_object.new()
+		
+		BO.internal_data << _self.deep_copy_hash(_self.internal_data)
+		BO.metadata << _self.deep_copy_hash(_self.metadata)
+
+		_return BO
+		
+	_when error
+		write(cond.report_string)
+	_endtry
+	
+_endmethod 
+$
+
+_pragma(classify_level=restricted, topic=value_object)
+_private _method value_object.deep_copy_hash(p_hash_map)
+	## helper method to deep copy a hash map.
+	## P_HASH_MAP: the hash map to deep copy.
+	## returns a new hash map with deeply copied contents.
+	
+	_try _with cond
+		_constant NEW_HASH << concurrent_hash_map.new()
+		_for key, value _over p_hash_map.fast_keys_and_elements()
+		_loop
+			NEW_HASH[key] <<    
+				_if value.is_kind_of?(concurrent_hash_map) _orif value.is_kind_of?(hash_table) _orif value.is_kind_of?(property_list)
+				_then
+					>> _self.deep_copy_hash(value)
+				_elif ~value.is_kind_of?(simple_vector) _andif value.responds_to?(:deep_copy|()|) 
+				_then
+					>> value.deep_copy()
+				_else
+					>> value.copy()
+				_endif
+			
+		_endloop
+		
+		
+		_return NEW_HASH
+		
+	_when error
+		write(cond.report_string)
+	_endtry
+_endmethod
+$
+
+_pragma(classify_level=basic,topic={value_object})
+_method value_object.as_json_string()
+	
+	_constant JSON_STREAM << internal_text_output_stream.new()
+	
+	_self.as_json(JSON_STREAM)
+	
+	_return JSON_STREAM.string
+	
+_endmethod
+$
+
+_pragma(classify_level=basic,topic={value_object})
+_method value_object.as_json(_optional p_out_stream)
+
+	_local l_out << p_out_stream.default(!output!)
+
+	_local l_json_encoder << json_encoder.new(
+			_proc(p_object)
+				# ToDo this has to handle at least unit_valu
+				_local l_ok? << _true
+				_local l_json << _unset
+				_return l_ok?, l_json
+				
+			_endproc)
+	_local l_json << l_json_encoder.generate_string(.internal_data)
+	l_out.write(l_json)
+	
+_endmethod
+$
+
+_pragma(classify_level=basic, topic={value_object})
+_method value_object.save_json_file(p_filename)
+	
+	_local l_ok? << _false
+	_local l_etos << _unset
+	
+	_protect
+		_local l_itos << internal_text_output_stream.new()
+		
+		_try _with cond
+			l_etos << external_text_output_stream.new(p_filename)
+			_self.as_json(l_itos)
+			
+			l_etos.write(l_itos.string)
+			l_ok? << _true
+			
+		_when error
+			write("Error in value_object.save_json_file(): ", cond.report_string)
+		_endtry
+		
+	_protection
+		
+		_if l_etos.responds_to?(:close|()|)
+		_then
+			l_etos.close()                                                    
+		_endif
+		
+	_endprotect
+	
+	_return l_ok?
+	
+_endmethod
+$ 
+
+_pragma(classify_level=basic,topic={value_object})
+_method value_object.escape_string(p_json_str)
+	
+	# Ensure backslashes (\) are escaped. These cause issues with JSON parsing.
+	
+	_constant DBL_BSLASH_REPL << newline_char * 7
+	_constant SINGLE_BSLASH_REPL << "```````"
+	_constant QUAD_BSLASH << "\\\\"
+	_constant DBL_BSLASH << "\\"
+	_constant SINGLE_BSLASH << "\"
+	
+	
+	_local l_json_str << p_json_str.replace_all_instances_of(DBL_BSLASH, DBL_BSLASH_REPL)	
+	l_json_str << l_json_str.replace_all_instances_of(SINGLE_BSLASH, SINGLE_BSLASH_REPL)	
+	l_json_str << l_json_str.replace_all_instances_of(DBL_BSLASH_REPL, QUAD_BSLASH)
+	l_json_str << l_json_str.replace_all_instances_of(SINGLE_BSLASH_REPL, DBL_BSLASH)	
+	
+	_return l_json_str
+	
+_endmethod
+$
+
+_pragma(classify_level=basic,topic={value_object})
+_method value_object.from_json(p_json_str)
+	
+	_try _with cond 
+		
+		_if ~p_json_str.empty? _andif p_json_str.class_name _is :char16_vector
+		_then
+			_local l_json_str << _self.escape_string(p_json_str)
+			
+			_constant BEEBLE_JSON_DECODER << json_decoder_helper.new()
+			
+			BEEBLE_JSON_DECODER.parse_string(l_json_str)
+			
+			_return _self.decode_json(BEEBLE_JSON_DECODER)
+			
+		_endif
+		
+	_when error
+		write(cond.report_string)
+		# do nothing.
+	_endtry
+	
+	# there was a problem, return an empty object.
+	_return value_object.new()
+	
+_endmethod
+$
+
+_pragma(classify_level=basic,topic={value_object})
+_method value_object.from_json_file(p_file_name)
+	
+	_try _with cond
+		
+		_if system.file_exists?(p_file_name)
+		_then
+			_constant JSON_DECODER << json_decoder_helper.new()
+			
+			JSON_DECODER.parse_file(p_file_name)
+			
+			_return _self.decode_json(JSON_DECODER)
+			
+		_endif
+		
+	_when error
+		write(cond.report_string)       
+		# do nothing.
+	_endtry
+	
+	_return value_object.new()
+	
+_endmethod
+$
+
+_pragma(classify_level=basic,topic={value_object})
+_method value_object.decode_json(p_decoder)
+	
+	_constant PROP << value_object.new()
+	
+	_if (l_type << p_decoder.get_type()) _is :map
+	_then
+		_constant NUM_ELEMS << p_decoder.expand_map()
+		
+		_for i _over 1.upto(NUM_ELEMS)
+		_loop
+			_local l_key << p_decoder.pop_symbol()
+			PROP.internal_data[l_key] << _self.decode_json(p_decoder)
+			
+		_endloop
+		
+		_return PROP		
+	_elif l_type _is :string
+	_then
+		_return  p_decoder.pop_string()		
+	_elif l_type _is :long
+	_then
+		_return  p_decoder.pop_long()		
+	_elif l_type _is :double
+	_then
+		_return  p_decoder.pop_double()		
+	_elif l_type _is :bignum
+	_then
+		_return  p_decoder.pop_bignum()		
+	_elif l_type _is :boolean
+	_then
+		_return  p_decoder.pop_boolean()		
+	_elif l_type _is :null
+	_then
+		_return  p_decoder.pop_null()		
+	_elif l_type _is :array
+	_then
+		_constant SZ << p_decoder.expand_array()
+		_constant ARR << rope.new(SZ)
+		
+		_for i _over 1.upto(SZ)
+		_loop
+			ARR[i] << _self.decode_json(p_decoder)
+		_endloop
+		
+		_return ARR		
+	_endif 
+	
+	_return PROP	
+_endmethod
+$
+
+_pragma(classify_level=basic,topic={value_object})
+_method value_object.pretty_print(_optional p_num_spaces_to_indent)
+	## Pretty prints the current object as formatted JSON.
+	
+	_if _self.empty?
+	_then 
+		write("{}")
+		_return 
+	_endif 
+	
+	_constant INDENT_STR << space_char * p_num_spaces_to_indent.default(4)
+	_constant JSON_STRING << _self.as_json_string()
+	
+	_local indent_level << 0
+	
+	_local in_quotes? << _false
+	_local escape_next? << _false
+	
+	_local prev_char << ""
+	_local output_str << ""
+	
+	_for char _over JSON_STRING.fast_elements()
+	_loop@JSON_STRING		
+		_if escape_next?
+		_then 
+			output_str << write_string(output_str, char)
+			escape_next? << _false
+			_continue
+		_endif		
+		
+		_if char _is %"
+		_then 
+			in_quotes? << ~in_quotes?
+		_elif char _is %\ _and in_quotes?
+		_then 
+			escape_next? << _true
+		_endif		
+		
+		_if _not in_quotes?
+		_then
+			_if char _is %{ _orif char _is %[
+			_then 
+				output_str << write_string(output_str, char)
+				indent_level +<< 1
+				output_str << write_string(output_str, newline_char, INDENT_STR * indent_level)				
+			_elif char _is %} _orif char _is %]
+			_then 
+				indent_level -<< 1
+				output_str << write_string(output_str, newline_char, INDENT_STR * indent_level, char)			
+			_elif char _is %,
+			_then 
+				output_str << write_string(output_str, char, newline_char, INDENT_STR * indent_level)
+			_else 
+				output_str << write_string(output_str, char)
+			_endif 
+		_else
+			output_str << write_string(output_str, char)
+		_endif
+		
+		_if char _is newline_char
+		_then 
+			_if prev_char _is %} _orif prev_char _is %]
+			_then 
+				# remove newline_char.
+				output_str << output_str.slice(1, output_str.size - 1)
+			_endif 
+		_else 
+			prev_char << char
+		_endif 
+		
+	_endloop 
+	
+	write(output_str)
+
+_endmethod
+$
+
+_pragma(classify_level=basic,topic={value_object})
+_method value_object.pp
+	
+	# wrapper for pretty_print() that implements a shortcut.
+	
+	_return _self.pretty_print()
+	
+_endmethod 
+$

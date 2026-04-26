@@ -1,0 +1,180 @@
+#% text_encoding = iso8859_1
+
+# Copyright (c) 2026 Stefan Alpers
+
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+# 
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+# 
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+_package sw
+$
+
+_block
+	_global value_object_benchmark
+	value_object_benchmark <<
+		_proc@value_object_benchmark()
+			_constant MEASURE_TIME << _proc @measure_time(p_label, p_proc)
+							  _local t_start << date_time.now()
+							  p_proc.invoke()
+							  _local t_end << date_time.now()
+							  _local elapsed << t_end - t_start
+							  write(p_label, ": ", elapsed.milliseconds, " ms")
+							  >> elapsed.milliseconds
+						  _endproc
+
+			_local l_rwos << rope.new_from(
+						 gis_program_manager.databases[:gis].
+							 collection(:some_collection))
+
+			write("Count :", l_rwos.size)
+
+			_constant EXTRACT_VALUE_OBJECT << _proc@extract_value_opject(p_rwo)
+								  _local l_value_object << value_object.new_from_dd_record(
+												   p_rwo,
+												   {:id,
+												    :material,
+												    :diameter,
+												    :risk})
+								  l_value_object.pipe << p_rwo.pipe
+								  l_value_object.length << p_rwo.length
+								  l_value_object.count_defects << p_rwo.count_defects
+
+								  >> l_value_object
+							  _endproc
+
+
+			_constant EXTRACT_PROPERTY_LIST << _proc@extract_property_list(p_rwo)
+
+								   >> property_list.new_with(
+									      :id, p_rwo.id,
+									      :material, p_rwo.material,
+									      :diameter, p_rwo.diameter,
+									      :risk, p_rwo.risk,
+									      :pipe,  p_rwo.pipe,
+									      :length, p_rwo.length,
+									      :count_defects, p_rwo.count_defects)
+							   _endproc
+			
+			_constant IS_RELEVANT? << _proc@is_relevant?(p_obj)
+							  >> p_obj.pipe _isnt _unset _andif
+								  p_obj.length _isnt _unset
+						  _endproc
+			_constant HAS_RISK? << _proc@has_risk(p_obj)
+						       >> p_obj.risk _isnt _unset
+					       _endproc
+			_constant CALC_DIFFERENCE << _proc@calc_difference(p_obj)
+							     >> unit_value.new(p_obj.pipe.line_length,:mm) - p_obj.length
+						     _endproc
+			
+			_constant IS_RELEVANT_PL? << _proc@is_relevant_pl?(p_obj)
+							  >> p_obj[:pipe] _isnt _unset _andif
+								  p_obj[:length] _isnt _unset
+						  _endproc
+			_constant HAS_RISK_PL? << _proc@has_risk_pl(p_obj)
+						       >> p_obj[:risk] _isnt _unset
+					       _endproc
+			_constant CALC_DIFFERENCE_PL << _proc@calc_difference_pl(p_obj)
+							     >> unit_value.new(p_obj[:pipe].line_length,:mm) - p_obj[:length]
+						     _endproc
+			
+
+			write("## Scenario A: rwo_record")
+			write(newline_char)
+			write("Checks if a rwo_record relevant and then transforms it into a value_object.")
+			MEASURE_TIME.invoke("  Time A",
+					    _proc()
+						    _import l_rwos, IS_RELEVANT?, HAS_RISK?, CALC_DIFFERENCE
+						    _local results << rope.new()
+						    _for rwo _over l_rwos.fast_elements()
+						    _loop
+							    _if IS_RELEVANT?.invoke(rwo)
+							    _then
+								    results.add(value_object.new(
+											:id,    rwo.id,
+											:has_risk, HAS_RISK?.invoke(rwo),
+											:difference,  CALC_DIFFERENCE.invoke(rwo)))
+							    _endif
+						    _endloop
+					    _endproc)
+
+			write("## Scenario B: value_object")
+			write(newline_char)
+			write("Maps rwo_records to value_objects and transforms these, if relevant, into value_objects.")
+			MEASURE_TIME.invoke("  Time B",
+					    _proc()
+						    _import l_rwos, EXTRACT_VALUE_OBJECT, IS_RELEVANT?, HAS_RISK?, CALC_DIFFERENCE
+						    _local snapshots << l_rwos.map(EXTRACT_VALUE_OBJECT)
+						    _local results << rope.new()
+						    _for snap _over snapshots.fast_elements()
+						    _loop
+							    _if IS_RELEVANT?.invoke(snap)
+							    _then
+								    results.add(value_object.new(
+											:id,    snap.id,
+											:has_risk, HAS_RISK?.invoke(snap),
+											:difference,  CALC_DIFFERENCE.invoke(snap)))
+							    _endif
+						    _endloop
+					    _endproc)
+
+			write("## Scenario C: property_list")
+			write(newline_char)
+			write("Maps rwo_records to property_lists and transforms these, if relevant, into value_objects.")
+			MEASURE_TIME.invoke("  Time C",
+					    _proc()
+						    _import l_rwos, EXTRACT_PROPERTY_LIST, IS_RELEVANT_PL?, HAS_RISK_PL?, CALC_DIFFERENCE_PL
+						    _local snapshots << l_rwos.map(EXTRACT_PROPERTY_LIST)
+						    _local results << rope.new()
+						    _for snap _over snapshots.fast_elements()
+						    _loop
+							    _if IS_RELEVANT_PL?.invoke(snap)
+							    _then
+								    results.add(value_object.new(
+											:id,    snap[:id],
+											:has_risk, HAS_RISK_PL?.invoke(snap),
+											:difference,  CALC_DIFFERENCE_PL.invoke(snap)))
+							    _endif
+						    _endloop
+						    
+					    _endproc)
+
+			write("## Scenario D: Only value object extraction")
+			write(newline_char)
+			write("Just map rwo_records to value_objects.")
+			MEASURE_TIME.invoke("Only value object extraction",
+					    _proc()
+						    _import l_rwos, EXTRACT_VALUE_OBJECT
+						    _local snapshots << l_rwos.map(EXTRACT_VALUE_OBJECT)
+					    _endproc)
+
+			write("## Scenario E: Only value object with logical method extraction")
+			write(newline_char)
+			write("Just map rwo_records to value_objects. Considers only the logical method.")
+			_constant EXTRACT_LOGICAL_METHOD << _proc @extract_logical_method(p_rwo)
+							     >> value_object.new(:id, p_rwo.count_defects)
+						     _endproc
+
+			MEASURE_TIME.invoke("Only value object with logical method extraction",
+					    _proc()
+						    _import l_rwos, EXTRACT_LOGICAL_METHOD
+						    _local snapshots << l_rwos.map(EXTRACT_LOGICAL_METHOD)
+					    _endproc)
+			
+		_endproc 
+	
+_endblock
+$
